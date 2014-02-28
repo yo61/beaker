@@ -304,6 +304,22 @@ VagrantFiles are created per host configuration file.  They can be found in the 
     > cd sample.cfg; ls
     VagrantFile
 
+## Docker support ##
+
+This option allows for testing against Docker containers.  The base container is
+named by the `base` key.
+
+  HOSTS:
+    ubuntu-12-10:
+      platform: ubuntu-12.10-x64
+      image: ubuntu:12.10
+      hypervisor: docker
+  CONFIG:
+    type: foss
+
+Currently this just starts an sshd, so is only useful for 'puppet apply' style
+testing.
+
 # Putting it all together #
 
 ## Running FOSS tests ##
