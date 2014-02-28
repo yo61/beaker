@@ -15,6 +15,12 @@ module Beaker
       def add_master_entry
         @logger.notify "Add Master entry to /etc/hosts"
         master = only_host_with_role(@hosts, :master)
+        if master["hypervisor"] and master["hypervisor"] =~ /docker/
+          # skip on docker because as of 0.8.1 /etc/hosts isn't modifiable
+          # https://github.com/dotcloud/docker/issues/2267
+          @logger.debug "Don't update master entry on docker masters"
+          return
+        end
         if master["hypervisor"] and master["hypervisor"] =~ /vagrant/
           @logger.debug "Don't update master entry on vagrant masters"
           return
