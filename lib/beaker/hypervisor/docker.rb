@@ -7,6 +7,14 @@ module Beaker
       @options = options
       @logger = options[:logger]
       @hosts = hosts
+
+      # increase the http timeouts as provisioning images can be slow
+      ::Docker.options = { :write_timeout => 300, :read_timeout => 300 }
+      # assert that the docker-api gem can talk to your docker
+      # enpoint.  Will raise if there is a version mismatch
+      ::Docker.validate_version!
+      # Pass on all the logging from docker-api to the beaker logger instance
+      ::Docker.logger = @logger
     end
 
     def provision
@@ -16,7 +24,7 @@ module Beaker
         @logger.notify "provisioning #{host.name}"
 
         @logger.debug("Creating image")
-        image = ::Docker::Image.build(dockerfile_for(host))
+        image = ::Docker::Image.build(dockerfile_for(host), { :rm => true })
         @logger.debug("Tagging image #{image.id} as #{host.name}")
         image.tag({
           :repo => host.name,
@@ -55,14 +63,26 @@ module Beaker
       @hosts.each do |host|
         if container = host['docker_container']
           @logger.debug("stop container #{container.id}")
-          container.stop
+          begin
+            container.stop
+          rescue Excon::Errors::ClientError => e
+            @logger.warn("stop of container #{container.id} failed: #{e.response.body}")
+          end
           @logger.debug("delete container #{container.id}")
-          container.delete
+          begin
+            container.delete
+          rescue Excon::Errors::ClientError => e
+            @logger.warn("deletion of container #{container.id} failed: #{e.response.body}")
+          end
         end
 
         if image = host['docker_image']
           @logger.debug("delete image #{image.id}")
-          image.delete
+          begin
+            image.delete
+          rescue Excon::Errors::ClientError => e
+            @logger.warn("deletion of image #{image.id} failed: #{e.response.body}")
+          end
         end
       end
     end
@@ -79,17 +99,28 @@ module Beaker
         FROM #{host['image']}
       EOF
 
-      # add os-specific actions
-      dockerfile += case host['platform']
+      # additional options to specify to the sshd
+      # may vary by platform
+      sshd_options = ''
+
+      # add platform-specific actions
+      case host['platform']
       when /ubuntu/, /debian/
-        <<-EOF
+        dockerfile += <<-EOF
           RUN apt-get update
-          RUN apt-get install -y openssh-server
+          RUN apt-get install -y openssh-server openssh-client
         EOF
-      when /centos/, /fedora/, /redhat/
-        <<-EOF
+      when /^el-/, /centos/, /fedora/, /redhat/
+        dockerfile += <<-EOF
           RUN yum clean all
-          RUN yum install -y sudo openssh-server
+          RUN yum install -y sudo openssh-server openssh-clients
+          RUN ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key
+          RUN ssh-keygen -t dsa -f /etc/ssh/ssh_host_dsa_key
+        EOF
+      when /opensuse/, /sles/
+        sshd_options = '-o "PermitRootLogin yes" -o "PasswordAuthentication yes" -o "UsePAM no"'
+        dockerfile += <<-EOF
+          RUN zypper -n in openssh
           RUN ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key
           RUN ssh-keygen -t dsa -f /etc/ssh/ssh_host_dsa_key
         EOF
@@ -100,7 +131,7 @@ module Beaker
 
       # Make sshd directory, set root password
       dockerfile += <<-EOF
-        RUN mkdir /var/run/sshd
+        RUN mkdir -p /var/run/sshd
         RUN echo root:#{root_password} | chpasswd
       EOF
 
@@ -109,10 +140,11 @@ module Beaker
         "RUN #{command}\n"
       }.join("\n")
 
-      # And define the sshd
+      # How to start a sshd on port 22.  May be an init for more supervision
+      cmd = host['docker_cmd'] || "/usr/sbin/sshd -D #{sshd_options}"
       dockerfile += <<-EOF
         EXPOSE 22
-        CMD /usr/sbin/sshd -D
+        CMD #{cmd}
       EOF
 
       @logger.debug("Dockerfile is #{dockerfile}")

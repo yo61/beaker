@@ -85,7 +85,16 @@ module Beaker
           @result = host.exec(command, opts)
 
           # Also, let additional checking be performed by the caller.
-          yield self if block_given?
+          if block_given?
+            case block.arity
+              #block with arity of 0, just hand back yourself
+              when 0
+                yield self
+              #block with arity of 1 or greater, hand back the result object
+              else 
+                yield @result
+            end
+          end
 
           return @result
         end
@@ -456,7 +465,8 @@ module Beaker
       # @api dsl
       def with_puppet_running_on host, conf_opts, testdir = host.tmpdir(File.basename(@path)), &block
         raise(ArgumentError, "with_puppet_running_on's conf_opts must be a Hash. You provided a #{conf_opts.class}: '#{conf_opts}'") if !conf_opts.kind_of?(Hash)
-        cmdline_args = conf_opts.delete(:__commandline_args__)
+        cmdline_args = conf_opts[:__commandline_args__]
+        conf_opts = conf_opts.reject { |k,v| k == :__commandline_args__ }
 
         begin
           backup_file = backup_the_file(host, host['puppetpath'], testdir, 'puppet.conf')
@@ -489,6 +499,14 @@ module Beaker
             end
 
           rescue Exception => teardown_exception
+            begin
+              if !host.is_pe?
+                dump_puppet_log(host)
+              end
+            rescue Exception => dumping_exception
+              logger.error("Raised during attempt to dump puppet logs: #{dumping_exception}")
+            end
+
             if original_exception
               logger.error("Raised during attempt to teardown with_puppet_running_on: #{teardown_exception}\n---\n")
               raise original_exception
